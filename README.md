@@ -32,9 +32,44 @@ methods, and the test/performance plan — lives in:
 | §13 | Numerical methods, precision & stability |
 | §14 | Testing, validation & performance budgets |
 
+## ✅ Validated mathematics
+
+The spec's math is executable, not aspirational. `tools/validate_spec.py`
+implements the governing equations independently and gates on eight checks
+(C1–C8): the one-pole coefficient identity, soft-knee C¹ continuity, the
+emergent feedback ratio (2:1 → 30:1), the multi-reservoir program-dependent
+release (0.2 s / 10 s / 25 s), M-S null reconstruction, push-pull even-harmonic
+cancellation, and IEC VU ballistics. Figures land in
+[`docs/validation/`](./docs/validation/):
+
+| | |
+|---|---|
+| ![static curve](docs/validation/fig2_static_curve.png) | ![release](docs/validation/fig3_release.png) |
+
+```sh
+pip install numpy matplotlib
+python3 tools/validate_spec.py     # exit 0 iff all 8 checks pass
+```
+
+## 🧱 C++20 DSP core (skeleton)
+
+`src/dsp/` holds the framework-free, header-only core mandated by §12 — the
+vari-mu gain cell (LUT-backed, no per-sample transcendentals), the
+multi-reservoir sidechain, the feedback channel loop, the soft-knee gain
+computer, the orthonormal M-S matrix, and GR/VU meter ballistics — with a
+dependency-free unit-test binary mirroring §14.2:
+
+```sh
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+./build/ta670_tests                # 8/8 PASS
+```
+
+Built with `-Wall -Wextra -Wpedantic -Werror -Wconversion -Wshadow` per the
+coding standard.
+
 ## Status
 
-**Specification draft v0.1.0** — implementation has not started. The spec is
-written to be directly implementable: C++20 core, CLAP-first with VST3/AU/AAX
-wrappers, strict real-time-safety rules, and numeric acceptance criteria for
-every requirement.
+**Specification draft v0.1.0** with validated math and a tested DSP-core
+skeleton. Next milestones: oversampling filters (§9), coloration models (§8),
+parameter layer (§10), and the CLAP/VST3/AU plugin adapters (§12).

@@ -431,8 +431,23 @@ g_{dB}(u) = -\,G_\text{max}\Big[(1-\theta)\,u + \theta\,u^{p}\Big],
 $$
 
 with $G_\text{max}$ the maximum reduction (e.g. 40 dB), $p$ the tail exponent
-(≈ 2–3), and $\theta$ the tail weight set by the **DC-threshold trim** (§6.3).
+(≈ 1.5–3), and $\theta$ the tail weight set by the **DC-threshold trim** (§6.3).
 The linear multiplier applied to audio is $G = 10^{g_{dB}/20}$.
+
+**Calibration (normative).** Given target ratios $R_0$ at grazing drive and
+$R_1$ at full drive (§6.4), a maximum reduction $G_\text{max}$, and a control
+range $U$ (the output-overshoot span in dB over which $u$ traverses $[0,1]$),
+the law's parameters are fixed by the two slope constraints
+$k(0)=R_0-1$, $k(1)=R_1-1$:
+
+$$
+\theta = 1 - \frac{(R_0-1)\,U}{G_\text{max}}, \qquad
+p = \frac{(R_1-R_0)\,U}{G_\text{max}\,\theta},
+$$
+
+with admissibility $0<\theta<1$, $p>1$. Defaults $R_0=2$, $R_1=30$,
+$G_\text{max}=40$ dB, $U=2.5$ dB give $\theta = 0.9375$, $p \approx 1.8667$
+(validated numerically in `tools/validate_spec.py`, check C4).
 
 The *local slope* $k(u) = -\,dg_{dB}/du \cdot du/dL_i$ is the quantity that, via
 the feedback loop, becomes the compression ratio $R=1+k$ (§6.4); its growth with
@@ -540,15 +555,16 @@ Table 5.1 — attack/release $\tau$ and $\alpha$ at $f_s' = 48\,\text{kHz}$
 
 | Pos | $\tau_a$ | $\alpha_a$ | $\tau_{r}$ (primary) | $\alpha_{r}$ | Program-dependent |
 |---|---|---|---|---|---|
-| 1 | 0.2 ms | 0.90114 | 0.30 s | 0.9999306 | — |
-| 2 | 0.2 ms | 0.90114 | 0.80 s | 0.9999740 | — |
-| 3 | 0.4 ms | 0.94927 | 2.0 s | 0.9999896 | — |
-| 4 | 0.4 ms | 0.94927 | 5.0 s | 0.9999958 | — |
-| 5 | 0.4 ms | 0.94927 | 0.2 s → 10 s | 0.9998958 → 0.9999979 | dual reservoir |
-| 6 | 0.2 ms | 0.90114 | 0.3 s → 10 s → 25 s | 0.9999306 → 0.9999979 → 0.9999992 | triple reservoir |
+| 1 | 0.2 ms | 0.9010751 | 0.30 s | 0.9999306 | — |
+| 2 | 0.2 ms | 0.9010751 | 0.80 s | 0.9999740 | — |
+| 3 | 0.4 ms | 0.9492498 | 2.0 s | 0.9999896 | — |
+| 4 | 0.4 ms | 0.9492498 | 5.0 s | 0.9999958 | — |
+| 5 | 0.4 ms | 0.9492498 | 0.2 s → 10 s | 0.9998958 → 0.9999979 | fast + 1 reservoir |
+| 6 | 0.2 ms | 0.9010751 | 0.3 s → 10 s → 25 s | 0.9999306 → 0.9999979 → 0.9999992 | fast + 2 reservoirs |
 
-Values computed from $\alpha=\exp(-1/(\tau f_s'))$; verify to 7 significant
-figures in unit tests (§14.2).
+Values computed from $\alpha=\exp(-1/(\tau f_s'))$; the table is regenerated
+and cross-checked by `tools/validate_spec.py` (check C1/C2) and verified to
+7 significant figures in unit tests (§14.2).
 
 ### 5.4 Program-dependent (multi-reservoir) release
 
@@ -572,8 +588,14 @@ e_{s,j}[n] = \begin{cases}
 $$
 
 with $\lambda_{c,j}=\exp(-1/(\tau_{c,j}f_s'))$,
-$\lambda_{r,j}=\exp(-1/(\tau_{s,j}f_s'))$. The **effective control envelope** is
-the maximum across the fast state and the reservoirs:
+$\lambda_{r,j}=\exp(-1/(\tau_{s,j}f_s'))$. **Charge constants (normative):**
+$\tau_c = 1.0$ s for the 10 s reservoirs, $\tau_c = 5.0$ s for the 25 s
+reservoir — chosen so that isolated peaks (< 100 ms) leave the reservoirs
+essentially uncharged, a train of peaks charges the 10 s reservoir but not the
+25 s one, and only consistently high program (tens of seconds) engages the 25 s
+stage; behavior verified in `tools/validate_spec.py` (check C5). The
+**effective control envelope** is the maximum across the fast state and the
+reservoirs:
 
 $$
 e_\text{ctl}[n] = \max\!\Big(e_f[n],\ \max_j e_{s,j}[n]\Big).
@@ -965,11 +987,15 @@ $$
 \ddot m + 2\zeta\omega_n\dot m + \omega_n^2 m = \omega_n^2\,x_\text{rms},
 $$
 
-with damping $\zeta\approx 0.83$ (giving ≈ 1.5% overshoot via
-$\text{OS}=e^{-\zeta\pi/\sqrt{1-\zeta^2}}$) and $\omega_n$ chosen so the 99%
-settling time is 300 ms ($\omega_n \approx 4.6/(\zeta\cdot 0.3)\approx 18.5$
-rad/s). Discretize with the impulse-invariant or TPT method at base rate. The
-input is a mean-square average over a short window.
+with damping $\zeta = 0.80$, giving 1.52% overshoot via
+$\text{OS}=e^{-\zeta\pi/\sqrt{1-\zeta^2}}$ (inside the IEC 1–1.5% window), and
+$\omega_n \approx 13.1$ rad/s, solved numerically so that the step response
+**first crosses 99% at exactly 300 ms** (`tools/validate_spec.py`, check C8).
+Note the first-crossing criterion — the correct IEC reading — yields a smaller
+$\omega_n$ than the 1%-settling-band estimate $4.6/(\zeta\cdot 0.3)$, because
+an underdamped pointer touches 99% well before it settles. Discretize with the
+impulse-invariant or TPT method at base rate. The input is a mean-square
+average over a short window.
 
 ### 11.4 Metering selector
 
@@ -1132,6 +1158,10 @@ chain vs golden reference), and **measurement** (acoustic metrics vs REQ
 thresholds). All run in CI on every PR.
 
 ### 14.2 Unit tests
+
+An executable reference for the checks below exists as
+`tools/validate_spec.py` (checks C1–C8, exit-code gated, figure output under
+`docs/validation/`); the C++ unit tests mirror it.
 
 - **Envelope coefficients:** assert $\alpha=\exp(-1/(\tau f_s'))$ to 7 sig-figs
   for all six positions at 44.1/48/96/192 kHz (Table 5.1) — REQ-003.
