@@ -8,11 +8,13 @@
 #include <vector>
 
 #include "dsp/Channel.hpp"
+#include "dsp/Coloration.hpp"
 #include "dsp/Common.hpp"
 #include "dsp/GainCell.hpp"
 #include "dsp/Knee.hpp"
 #include "dsp/Meters.hpp"
 #include "dsp/MidSide.hpp"
+#include "dsp/Oversampler.hpp"
 #include "dsp/Sidechain.hpp"
 
 namespace {
@@ -209,6 +211,212 @@ void testVu()
            "T8 VU: 99% at 300 ms (+/-10 ms), overshoot ~1.5%");
 }
 
+// --- helpers for T9..T14 ------------------------------------------------------
+
+/// Windowed (Hann) Goertzel amplitude estimate at frequency f.
+double goertzelAmp(const std::vector<float>& x, double f, double fs)
+{
+    const std::size_t n = x.size();
+    const double w = 2.0 * 3.14159265358979324 * f / fs;
+    const double coeff = 2.0 * std::cos(w);
+    double s0 = 0.0, s1 = 0.0, s2 = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double hann = 0.5
+            - 0.5 * std::cos(2.0 * 3.14159265358979324
+                             * static_cast<double>(i)
+                             / static_cast<double>(n - 1));
+        s0 = static_cast<double>(x[i]) * hann + coeff * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    const double power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+    // Hann coherent gain = 0.5; amplitude of A*sin -> A
+    return 2.0 * std::sqrt(std::max(power, 0.0))
+        / (0.5 * static_cast<double>(n));
+}
+
+// --- T9: oversampling filter meets §9.3 stopband / ripple targets -------------
+void testFilterDesign()
+{
+    Oversampler os;
+    os.prepare(2, 512);
+    const auto& taps = os.upStage(0).taps();
+    // DFT response on a dense grid (filter runs at 2*fs_base)
+    double worstStop = -400.0, worstRipple = 0.0;
+    for (int i = 0; i <= 400; ++i) {
+        const double f = 0.5 * static_cast<double>(i) / 400.0;  // 0..Nyquist
+        double re = 0.0, im = 0.0;
+        for (std::size_t k = 0; k < taps.size(); ++k) {
+            const double ph = -2.0 * 3.14159265358979324 * f
+                * static_cast<double>(k);
+            re += static_cast<double>(taps[k]) * std::cos(ph);
+            im += static_cast<double>(taps[k]) * std::sin(ph);
+        }
+        const double magDb = 10.0 * std::log10(re * re + im * im + 1e-300);
+        if (f <= 0.225)  // passband: 0.45*fs_base at the 2x rate
+            worstRipple = std::max(worstRipple,
+                                   std::abs(magDb - linToDb(2.0)));
+        if (f >= 0.275)  // stopband
+            worstStop = std::max(worstStop, magDb - linToDb(2.0));
+    }
+    expect(worstRipple < 0.01 && worstStop < -118.0,
+           "T9 stage-1 half-band: ripple <0.01 dB, stopband <-118 dB");
+}
+
+// --- T10: reported latency is exact & round trip nulls (REQ-009) --------------
+void testOversamplerLatencyAndNull()
+{
+    for (const int factor : {2, 4, 8, 16}) {
+        Oversampler os;
+        const std::size_t block = 256, total = 8192;
+        os.prepare(factor, block);
+        const int lat = os.latencyBaseSamples();
+
+        // 997 Hz sine through up -> down; compare to input delayed by lat.
+        const double fs = 48000.0, f0 = 997.0;
+        std::vector<float> in(total), out(total);
+        for (std::size_t i = 0; i < total; ++i)
+            in[i] = static_cast<float>(
+                std::sin(2.0 * 3.14159265358979324 * f0
+                         * static_cast<double>(i) / fs));
+        for (std::size_t off = 0; off < total; off += block) {
+            float* up = os.processUp(in.data() + off, block);
+            os.processDown(up, out.data() + off, block);
+        }
+        double err = 0.0, ref = 0.0;
+        for (std::size_t i = 2048; i + static_cast<std::size_t>(lat) < total;
+             ++i) {
+            const double d = static_cast<double>(
+                                 out[i + static_cast<std::size_t>(lat)])
+                - static_cast<double>(in[i]);
+            err += d * d;
+            ref += static_cast<double>(in[i]) * static_cast<double>(in[i]);
+        }
+        const double nullDb = 10.0 * std::log10(err / ref + 1e-300);
+        char msg[96];
+        std::snprintf(msg, sizeof(msg),
+                      "T10 %2dx: latency %d smp exact, null %.0f dB (<-90)",
+                      factor, lat, nullDb);
+        expect(nullDb < -90.0, msg);
+    }
+}
+
+// --- T11: aliasing suppressed by oversampling (REQ-008) -----------------------
+void testAliasSuppression()
+{
+    // x^3 on a 15 kHz tone makes a 45 kHz component. Without oversampling it
+    // folds to |48k - 45k| = 3 kHz; with 4x it is filtered before decimation.
+    const double fs = 48000.0, f0 = 15000.0, fAlias = 3000.0;
+    const std::size_t block = 256, total = 16384;
+    auto run = [&](int factor) {
+        Oversampler os;
+        os.prepare(factor, block);
+        std::vector<float> in(total), out(total);
+        for (std::size_t i = 0; i < total; ++i)
+            in[i] = static_cast<float>(
+                0.9 * std::sin(2.0 * 3.14159265358979324 * f0
+                               * static_cast<double>(i) / fs));
+        for (std::size_t off = 0; off < total; off += block) {
+            float* up = os.processUp(in.data() + off, block);
+            const std::size_t nUp = block * static_cast<std::size_t>(factor);
+            for (std::size_t i = 0; i < nUp; ++i)
+                up[i] = up[i] * up[i] * up[i];  // odd nonlinearity
+            os.processDown(up, out.data() + off, block);
+        }
+        std::vector<float> tail(out.begin() + 4096, out.end());
+        const double alias = goertzelAmp(tail, fAlias, fs);
+        const double fund = goertzelAmp(tail, f0, fs);
+        return 20.0 * std::log10(alias / fund + 1e-300);
+    };
+    const double alias1x = run(1);
+    const double alias4x = run(4);
+    char msg[96];
+    std::snprintf(msg, sizeof(msg),
+                  "T11 alias at 3 kHz: 1x %.0f dBc (audible), 4x %.0f dBc (<-100)",
+                  alias1x, alias4x);
+    expect(alias1x > -30.0 && alias4x < -100.0, msg);
+}
+
+// --- T12: transformer coloration behavior (§8.1) ------------------------------
+void testColoration()
+{
+    const double fs = 96000.0;
+    auto thirdHarmonic = [&](double f0, double ampDb) {
+        Coloration col;
+        ColorationParams params;
+        params.noiseDbFs = -300.0;  // isolate distortion from noise
+        col.prepare(fs, params);
+        const std::size_t n = 32768;
+        std::vector<float> buf(n);
+        const double a = dbToLin(ampDb);
+        for (std::size_t i = 0; i < n; ++i)
+            buf[i] = static_cast<float>(
+                a * std::sin(2.0 * 3.14159265358979324 * f0
+                             * static_cast<double>(i) / fs));
+        col.processBlock(buf.data(), static_cast<int>(n));
+        std::vector<float> tail(buf.begin() + 8192, buf.end());
+        const double h1 = goertzelAmp(tail, f0, fs);
+        const double h2 = goertzelAmp(tail, 2 * f0, fs);
+        const double h3 = goertzelAmp(tail, 3 * f0, fs);
+        struct R { double gainDb, h2Dbc, h3Dbc; };
+        return R{linToDb(h1 / a), 20.0 * std::log10(h2 / h1 + 1e-300),
+                 20.0 * std::log10(h3 / h1 + 1e-300)};
+    };
+    const auto mid = thirdHarmonic(1000.0, -20.0);   // clean through-amp
+    const auto lf = thirdHarmonic(40.0, 0.0);        // LF core saturation
+    expect(std::abs(mid.gainDb) < 0.25 && mid.h3Dbc < -80.0
+               && lf.h3Dbc > -40.0 && lf.h3Dbc > lf.h2Dbc,
+           "T12 transformer: unity/clean at 1 kHz, odd LF saturation at 40 Hz");
+}
+
+// --- T13: coloration noise floor calibration (§8.3) ---------------------------
+void testNoiseFloor()
+{
+    Coloration col;
+    col.prepare(48000.0, {});
+    const std::size_t n = 1 << 18;
+    std::vector<float> buf(n, 0.0f);
+    col.processBlock(buf.data(), static_cast<int>(n));
+    double ms = 0.0;
+    for (const float v : buf)
+        ms += static_cast<double>(v) * static_cast<double>(v);
+    const double rmsDb = 10.0 * std::log10(ms / static_cast<double>(n));
+    expect(std::abs(rmsDb - (-116.0)) < 2.0,
+           "T13 idle noise floor -116 dBFS RMS (+/-2 dB)");
+}
+
+// --- T14: full chain — OS + feedback channel + coloration, finite & GR --------
+void testFullChain()
+{
+    const double fs = 48000.0;
+    const int factor = 4;
+    const std::size_t block = 256, total = 24576;  // multiple of block
+    Oversampler os;
+    os.prepare(factor, block);
+    Channel ch;
+    ch.prepare(fs * factor, 1, -20.0f);
+    Coloration col;
+    col.prepare(fs * factor, {});
+    std::vector<float> io(total);
+    for (std::size_t i = 0; i < total; ++i)
+        io[i] = static_cast<float>(
+            0.5 * std::sin(2.0 * 3.14159265358979324 * 220.0
+                           * static_cast<double>(i) / fs));
+    bool finite = true;
+    for (std::size_t off = 0; off < total; off += block) {
+        float* up = os.processUp(io.data() + off, block);
+        const auto nUp = static_cast<int>(block) * factor;
+        ch.processBlock(up, nUp);
+        col.processBlock(up, nUp);
+        os.processDown(up, io.data() + off, block);
+    }
+    for (const float v : io)
+        finite = finite && std::isfinite(v);
+    const float gr = ch.gainReductionDb();
+    expect(finite && gr > 3.0f && gr < 40.0f,
+           "T14 full chain (4x OS + channel + color): finite, GR active");
+}
+
 }  // namespace
 
 int main()
@@ -222,6 +430,12 @@ int main()
     testReservoirRelease();
     testChannelRatio();
     testVu();
+    testFilterDesign();
+    testOversamplerLatencyAndNull();
+    testAliasSuppression();
+    testColoration();
+    testNoiseFloor();
+    testFullChain();
     std::printf("%s (%d failure%s)\n",
                 g_failures == 0 ? "ALL PASS" : "FAILURES",
                 g_failures, g_failures == 1 ? "" : "s");

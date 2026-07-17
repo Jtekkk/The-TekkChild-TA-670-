@@ -878,17 +878,34 @@ half-band FIR (every even tap zero except the center), designed to:
   $0.55\,f_s$,
 - transition band $0.45$–$0.55\,f_s$.
 
-A Kaiser-window estimate for taps $N$ given stopband $A$ dB and normalized
-transition $\Delta f$:
+A Kaiser-window estimate for taps $N$ given stopband $A$ dB and transition
+$\Delta f$ **normalized to the rate the filter runs at** (the interpolated
+rate — the 0.45–0.55 $f_s$ transition of a 2× stage is $\Delta f = 0.05$ of
+its own rate, not 0.1):
 
 $$
 N \approx \frac{A - 7.95}{14.36\,\Delta f} + 1,\qquad
 \beta_\text{Kaiser} = 0.1102\,(A-8.7)\ \ (A>50).
 $$
 
-For $A=120$ dB and $\Delta f = 0.1$: $N \approx 79$ taps per half-band stage
-(before exploiting half-band zero-taps, which halve the multiplies). Cascade
-$\log_2(OS)$ stages.
+For $A=120$ dB, stage 1 needs $N \approx 157$, rounded to a legal half-band
+length. Later stages see progressively wider transition bands (the image band
+of stage $k$ starts at $2^{k-1}f_s - 0.45 f_s$) and are much shorter.
+**Normative stage lengths** (implemented in `src/dsp/Oversampler.hpp`,
+verified by tests T9–T11):
+
+| Stage (→ rate) | $\Delta f$ | $N$ required | $N$ chosen | Constraint |
+|---|---|---|---|---|
+| 1 (→ 2×) | 0.050 | 157 | **159** | half-band, $4M{+}3$ |
+| 2 (→ 4×) | 0.275 | 30 | **33** | $N \equiv 1 \pmod 4$ |
+| 3 (→ 8×) | 0.388 | 22 | **25** | $N \equiv 1 \pmod 8$ |
+| 4 (→ 16×) | 0.444 | 19 | **33** | $N \equiv 1 \pmod{16}$ |
+
+The $N_k \equiv 1 \pmod{2^k}$ constraints make the total round-trip latency an
+**exact integer** of base-rate samples (each up+down pair contributes
+$(N_k-1)/2^k$), enabling sample-exact host reporting and true null tests
+(REQ-009). Half-band zero-taps halve stage 1's multiplies in the polyphase
+form. Cascade $\log_2(OS)$ stages.
 
 **Eco/zero-latency: minimum-phase IIR.** An elliptic or polyphase-IIR
 (Butterworth-derived allpass) halfband gives near-zero latency with modest
@@ -897,8 +914,19 @@ phase nonlinearity, acceptable for live use; alias floor target ≥ 80 dB.
 ### 9.4 Latency
 
 Linear-phase FIR group delay is $(N-1)/2$ samples per stage at that stage's
-rate; total reported latency is the sum referred to the host rate (§3.4). Eco/IIR
-mode reports **0 samples**. The latency table is generated at init from the
+rate; the up+down round trip therefore adds $(N_k-1)/2^k$ base-rate samples per
+stage, integer by the §9.3 length constraints. **Normative round-trip latency**
+(any base rate; verified sample-exact by test T10 with nulls ≤ −124 dB):
+
+| Mode | OS | Latency (base samples) | @ 48 kHz |
+|---|---|---|---|
+| Eco (IIR) | 1× | 0 | 0 ms |
+| — | 2× | 79 | 1.65 ms |
+| Standard | 4× | 87 | 1.81 ms |
+| High | 8× | 90 | 1.88 ms |
+| Ultra | 16× | 92 | 1.92 ms |
+
+Eco/IIR mode reports **0 samples**. The table is generated at init from the
 actual filter lengths and reported exactly to the host (REQ-009).
 
 ### 9.5 Placement
@@ -1211,13 +1239,13 @@ program material. Bypass path must null to ≤ −120 dBFS (REQ-006).
 | OS mode | Latency | CPU / stereo instance @ 48 kHz | Memory |
 |---|---|---|---|
 | Eco (1×, IIR) | 0 samples | ≤ 0.8% | ≤ 2 MB |
-| Standard (4×) | ~ 1.0 ms | ≤ 3% | ≤ 4 MB |
-| High (8×) | ~ 1.3 ms | ≤ 6% | ≤ 6 MB |
-| Ultra (16×) | ~ 1.6 ms | ≤ 12% | ≤ 10 MB |
+| Standard (4×) | 87 samples (1.81 ms) | ≤ 3% | ≤ 4 MB |
+| High (8×) | 90 samples (1.88 ms) | ≤ 6% | ≤ 6 MB |
+| Ultra (16×) | 92 samples (1.92 ms) | ≤ 12% | ≤ 10 MB |
 
 Budgets are hard acceptance thresholds tied to REQ-011/012/014; regressions
-> 10% fail CI. Latency values are indicative and are reported to the host from
-the actual configured filter lengths (§9.4).
+> 10% fail CI. Latency values follow from the §9.3 normative filter lengths
+and are reported to the host from the actual configured filters (§9.4).
 
 ---
 
