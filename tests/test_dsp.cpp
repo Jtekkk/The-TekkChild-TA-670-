@@ -10,12 +10,15 @@
 #include "dsp/Channel.hpp"
 #include "dsp/Coloration.hpp"
 #include "dsp/Common.hpp"
+#include "dsp/Engine.hpp"
 #include "dsp/GainCell.hpp"
+#include "dsp/IirHalfband.hpp"
 #include "dsp/Knee.hpp"
 #include "dsp/Meters.hpp"
 #include "dsp/MidSide.hpp"
 #include "dsp/Oversampler.hpp"
 #include "dsp/Sidechain.hpp"
+#include "params/Parameters.hpp"
 
 namespace {
 
@@ -417,6 +420,204 @@ void testFullChain()
            "T14 full chain (4x OS + channel + color): finite, GR active");
 }
 
+// --- T15: parameter layer (§10) ------------------------------------------------
+void testParameters()
+{
+    using namespace ta670::params;
+    // normalized <-> plain round trip at endpoints and midpoint
+    bool ok = true;
+    for (const auto& d : kParamTable) {
+        ok = ok && std::abs(toPlain(d.id, 0.f) - d.min) < 1e-5f
+            && std::abs(toPlain(d.id, 1.f) - d.max) < 1e-5f
+            && std::abs(toNormalized(d.id, d.def)
+                        - toNormalized(d.id, toPlain(d.id, toNormalized(d.id, d.def))))
+                < 1e-6f;
+    }
+    // stepped params quantize (§10.3)
+    ok = ok && toPlain(ParamId::TimeConstA, 0.49f) ==
+        std::round(toPlain(ParamId::TimeConstA, 0.49f));
+    // smoother reaches 1-1/e at tau (§10.4)
+    Smoother sm;
+    const double fs = 48000.0;
+    sm.prepare(fs, 20.f, 0.f);
+    sm.setTarget(1.f);
+    float v = 0.f;
+    for (int i = 0; i < static_cast<int>(0.020 * fs); ++i)
+        v = sm.next();
+    ok = ok && std::abs(v - 0.632f) < 0.01f;
+    // snapshot exchange publishes complete states
+    SnapshotExchange ex;
+    Snapshot s = Snapshot::defaults();
+    s.set(ParamId::Mix, 42.f);
+    ex.publish(s);
+    ok = ok && ex.read().get(ParamId::Mix) == 42.f
+        && ex.read().get(ParamId::Link) == desc(ParamId::Link).def;
+    expect(ok, "T15 params: tapers, stepped quantize, smoother tau, snapshot");
+}
+
+// --- T16: elliptic IIR halfband design & streaming (Eco mode, §9.3) -----------
+void testIirHalfband()
+{
+    using namespace ta670::dsp::iir;
+    const auto coefs = designHalfband(0.225, 100.0);
+    // analytic response: passband ripple and equiripple stopband
+    double worstPass = 0.0, worstStop = -400.0;
+    for (int i = 0; i <= 300; ++i) {
+        const double f = 0.5 * static_cast<double>(i) / 300.0;
+        const double mag = halfbandMagnitude(coefs, f);
+        const double db = 20.0 * std::log10(mag + 1e-300);
+        if (f <= 0.225)
+            worstPass = std::max(worstPass, std::abs(db));
+        if (f >= 0.275)
+            worstStop = std::max(worstStop, db);
+    }
+    // streaming: 997 Hz round trip amplitude preserved; x^3 alias suppressed
+    const double fs = 48000.0;
+    const std::size_t n = 16384;
+    IirOversampler2x os;
+    os.prepare();
+    std::vector<float> sig(n), up(2 * n), out(n);
+    for (std::size_t i = 0; i < n; ++i)
+        sig[i] = static_cast<float>(
+            0.9 * std::sin(2.0 * 3.14159265358979324 * 15000.0
+                           * static_cast<double>(i) / fs));
+    os.processUp(sig.data(), up.data(), n);
+    for (auto& v : up)
+        v = v * v * v;
+    os.processDown(up.data(), out.data(), n);
+    std::vector<float> tail(out.begin() + 4096, out.end());
+    const double alias = goertzelAmp(tail, 3000.0, fs);
+    const double fund = goertzelAmp(tail, 15000.0, fs);
+    const double aliasDbc = 20.0 * std::log10(alias / fund + 1e-300);
+    char msg[112];
+    std::snprintf(msg, sizeof(msg),
+                  "T16 IIR halfband: %zu coefs, pass %.4f dB, stop %.0f dB, "
+                  "alias %.0f dBc (<-80)",
+                  coefs.size(), worstPass, worstStop, aliasDbc);
+    expect(worstPass < 0.01 && worstStop < -95.0 && aliasDbc < -80.0, msg);
+}
+
+// --- T17: engine transparency null at reported latency (Stereo & M-S) ---------
+void testEngineTransparency()
+{
+    const double fs = 48000.0;
+    const std::size_t block = 256, total = 16384;
+    for (const auto mode : {ChannelMode::Stereo, ChannelMode::MidSide}) {
+        EngineConfig cfg;
+        cfg.mode = mode;
+        cfg.osMode = OsMode::Standard;
+        cfg.colorEnabled = false;
+        cfg.thresholdDb = {40.f, 40.f};  // never crossed -> no GR
+        Engine eng;
+        eng.prepare(fs, block, cfg);
+        const int lat = eng.latencySamples();
+        std::vector<float> inL(total), inR(total), l(total), r(total);
+        for (std::size_t i = 0; i < total; ++i) {
+            const double t = static_cast<double>(i) / fs;
+            inL[i] = static_cast<float>(
+                0.5 * std::sin(2.0 * 3.14159265358979324 * 997.0 * t));
+            inR[i] = static_cast<float>(
+                0.4 * std::sin(2.0 * 3.14159265358979324 * 1409.0 * t));
+            l[i] = inL[i];
+            r[i] = inR[i];
+        }
+        for (std::size_t off = 0; off < total; off += block)
+            eng.processBlock(l.data() + off, r.data() + off, block);
+        double err = 0.0, ref = 0.0;
+        for (std::size_t i = 4096; i + static_cast<std::size_t>(lat) < total;
+             ++i) {
+            const auto j = i + static_cast<std::size_t>(lat);
+            const double dl = static_cast<double>(l[j])
+                - static_cast<double>(inL[i]);
+            const double dr = static_cast<double>(r[j])
+                - static_cast<double>(inR[i]);
+            err += dl * dl + dr * dr;
+            ref += static_cast<double>(inL[i]) * static_cast<double>(inL[i])
+                + static_cast<double>(inR[i]) * static_cast<double>(inR[i]);
+        }
+        const double nullDb = 10.0 * std::log10(err / ref + 1e-300);
+        char msg[112];
+        std::snprintf(msg, sizeof(msg),
+                      "T17 engine %s: transparent null %.0f dB (<-90) at %d smp",
+                      mode == ChannelMode::Stereo ? "Stereo" : "M-S   ",
+                      nullDb, lat);
+        expect(nullDb < -90.0, msg);
+    }
+}
+
+// --- T18: sidechain link preserves image (§7.3) --------------------------------
+void testSidechainLink()
+{
+    const double fs = 48000.0;
+    const std::size_t block = 256, total = 3 * 16384;
+    auto rightDrop = [&](float linkAmount) {
+        EngineConfig cfg;
+        cfg.osMode = OsMode::Standard;
+        cfg.colorEnabled = false;
+        cfg.linkAmount = linkAmount;
+        cfg.position = {1, 1};
+        cfg.thresholdDb = {-20.f, -20.f};
+        Engine eng;
+        eng.prepare(fs, block, cfg);
+        std::vector<float> l(total), r(total);
+        const double aL = dbToLin(-10.0);   // +10 dB over threshold
+        const double aR = dbToLin(-50.0);   // far below threshold
+        for (std::size_t i = 0; i < total; ++i) {
+            const double t = static_cast<double>(i) / fs;
+            l[i] = static_cast<float>(
+                aL * std::sin(2.0 * 3.14159265358979324 * 997.0 * t));
+            r[i] = static_cast<float>(
+                aR * std::sin(2.0 * 3.14159265358979324 * 1409.0 * t));
+        }
+        for (std::size_t off = 0; off < total; off += block)
+            eng.processBlock(l.data() + off, r.data() + off, block);
+        std::vector<float> tailR(r.begin() + static_cast<long>(total) / 2,
+                                 r.end());
+        return linToDb(goertzelAmp(tailR, 1409.0, fs) / aR);
+    };
+    const double unlinked = rightDrop(0.0f);
+    const double linked = rightDrop(1.0f);
+    char msg[112];
+    std::snprintf(msg, sizeof(msg),
+                  "T18 link: quiet R drop %.2f dB unlinked, %.1f dB linked",
+                  unlinked, linked);
+    // unlinked: R untouched; linked: R follows L's ~9 dB gain reduction
+    expect(std::abs(unlinked) < 0.2 && linked < -6.0 && linked > -13.0, msg);
+}
+
+// --- T19: dry/wet mix law with latency-compensated dry (§3.4) ------------------
+void testMixLaw()
+{
+    const double fs = 48000.0;
+    const std::size_t block = 256, total = 8192;
+    EngineConfig cfg;
+    cfg.osMode = OsMode::Standard;
+    cfg.colorEnabled = false;
+    cfg.mix = 0.0f;                      // fully dry
+    cfg.thresholdDb = {-30.f, -30.f};    // GR active on the wet path
+    Engine eng;
+    eng.prepare(fs, block, cfg);
+    const int lat = eng.latencySamples();
+    std::vector<float> in(total), l(total), r(total);
+    for (std::size_t i = 0; i < total; ++i) {
+        in[i] = static_cast<float>(
+            0.5 * std::sin(2.0 * 3.14159265358979324 * 997.0
+                           * static_cast<double>(i) / fs));
+        l[i] = in[i];
+        r[i] = in[i];
+    }
+    for (std::size_t off = 0; off < total; off += block)
+        eng.processBlock(l.data() + off, r.data() + off, block);
+    double worst = 0.0;
+    for (std::size_t i = 2048; i + static_cast<std::size_t>(lat) < total; ++i)
+        worst = std::max(worst,
+                         std::abs(static_cast<double>(
+                                      l[i + static_cast<std::size_t>(lat)])
+                                  - static_cast<double>(in[i])));
+    expect(worst < 1e-6,
+           "T19 mix=0: output equals latency-compensated dry exactly");
+}
+
 }  // namespace
 
 int main()
@@ -436,6 +637,11 @@ int main()
     testColoration();
     testNoiseFloor();
     testFullChain();
+    testParameters();
+    testIirHalfband();
+    testEngineTransparency();
+    testSidechainLink();
+    testMixLaw();
     std::printf("%s (%d failure%s)\n",
                 g_failures == 0 ? "ALL PASS" : "FAILURES",
                 g_failures, g_failures == 1 ? "" : "s");

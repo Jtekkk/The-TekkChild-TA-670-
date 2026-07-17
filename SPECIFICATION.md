@@ -861,12 +861,12 @@ weaker 5th/7th order tails (REQ-008).
 
 ### 9.2 Quality modes
 
-| Mode | OS factor | Target use |
-|---|---|---|
-| Eco | 1× (min-phase IIR guard) | Live/tracking, zero latency (REQ-011) |
-| Standard | 4× | Mixing |
-| High | 8× | Mastering |
-| Ultra | 16× | Offline/mastering, golden-reference-class |
+| Mode | OS factor | Filters | Target use |
+|---|---|---|---|
+| Eco | 2× polyphase-IIR | min-phase, 0 reported latency | Live/tracking (REQ-011) |
+| Standard | 4× | linear-phase FIR | Mixing |
+| High | 8× | linear-phase FIR | Mastering |
+| Ultra | 16× | linear-phase FIR | Offline/mastering, golden-reference-class |
 
 ### 9.3 Filter design
 
@@ -907,9 +907,27 @@ $(N_k-1)/2^k$), enabling sample-exact host reporting and true null tests
 (REQ-009). Half-band zero-taps halve stage 1's multiplies in the polyphase
 form. Cascade $\log_2(OS)$ stages.
 
-**Eco/zero-latency: minimum-phase IIR.** An elliptic or polyphase-IIR
-(Butterworth-derived allpass) halfband gives near-zero latency with modest
-phase nonlinearity, acceptable for live use; alias floor target ≥ 80 dB.
+**Eco/zero-latency: elliptic polyphase-IIR halfband (normative).** Eco mode
+oversamples 2× through the two-branch polyphase allpass decomposition
+$H(z) = \tfrac12\,[A_0(z^2) + z^{-1}A_1(z^2)]$ with coefficients designed
+analytically via the Jacobi elliptic nome (Ansari 1985; Valenzuela &
+Constantinides 1984): selectivity $k = \tan^2(\omega_p/2)$, nome $q(k)$ from
+the standard series, and — because the halfband is power-complementary, so
+passband and stopband ripples are coupled with elliptic ripple parameter
+$k_1 = \delta_s^2$ — the degree equation
+
+$$
+\delta_s = 2\,q^{N/4} \;\Longrightarrow\;
+N = \left\lceil \frac{2\ln(\delta_s^2/4)}{\ln q} \right\rceil
+\ \text{(rounded up to odd)}.
+$$
+
+For $f_\text{pass}=0.225$, $A=100$ dB: $N=17$, i.e. **8 first-order allpass
+sections** per direction. Implemented in `src/dsp/IirHalfband.hpp`; measured
+equiripple stopband −107 dB, passband ripple < 0.0001 dB, streaming alias
+floor −108 dBc (test T16). Minimum-phase-like: reported latency **0 samples**
+(REQ-011), with a few samples of frequency-dependent group delay in place of
+the FIR modes' constant delay.
 
 ### 9.4 Latency
 
@@ -920,8 +938,8 @@ stage, integer by the §9.3 length constraints. **Normative round-trip latency**
 
 | Mode | OS | Latency (base samples) | @ 48 kHz |
 |---|---|---|---|
-| Eco (IIR) | 1× | 0 | 0 ms |
-| — | 2× | 79 | 1.65 ms |
+| Eco (IIR) | 2× | 0 (min-phase) | 0 ms |
+| — (FIR) | 2× | 79 | 1.65 ms |
 | Standard | 4× | 87 | 1.81 ms |
 | High | 8× | 90 | 1.88 ms |
 | Ultra | 16× | 92 | 1.92 ms |
@@ -1238,7 +1256,7 @@ program material. Bypass path must null to ≤ −120 dBFS (REQ-006).
 
 | OS mode | Latency | CPU / stereo instance @ 48 kHz | Memory |
 |---|---|---|---|
-| Eco (1×, IIR) | 0 samples | ≤ 0.8% | ≤ 2 MB |
+| Eco (2×, IIR) | 0 samples | ≤ 0.8% | ≤ 2 MB |
 | Standard (4×) | 87 samples (1.81 ms) | ≤ 3% | ≤ 4 MB |
 | High (8×) | 90 samples (1.88 ms) | ≤ 6% | ≤ 6 MB |
 | Ultra (16×) | 92 samples (1.92 ms) | ≤ 12% | ≤ 10 MB |

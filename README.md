@@ -57,16 +57,20 @@ python3 tools/validate_spec.py     # exit 0 iff all 8 checks pass
 vari-mu gain cell (LUT-backed, no per-sample transcendentals), the
 multi-reservoir sidechain, the feedback channel loop, the soft-knee gain
 computer, the orthonormal M-S matrix, GR/VU meter ballistics, the §9
-oversampler (Kaiser half-band cascade, 1×–16×, exact integer latency:
-79/87/90/92 base samples, round-trip nulls ≤ −124 dB, alias floor −139 dBc at
-4×), and the §8 coloration model (transformer flux saturation, tube residual,
-calibrated noise floor) — with a dependency-free unit-test binary mirroring
-§14.2:
+oversampler (Kaiser half-band FIR cascade, exact integer latency 79/87/90/92
+base samples, round-trip nulls ≤ −124 dB, alias floor −139 dBc at 4×; plus
+the Eco-mode elliptic polyphase-IIR halfband — 8 allpass sections, −107 dB
+stopband, zero reported latency), the §8 coloration model (transformer flux
+saturation, tube residual, calibrated noise floor), and the §3 stereo
+**Engine** integrating dual-mono/stereo/M-S modes, sidechain linking, and
+delay-compensated dry/wet mix. `src/params/` implements the §10 parameter
+table with tapers, dezippering, and wait-free snapshot publication. A
+dependency-free unit-test binary mirrors §14.2:
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-./build/ta670_tests                # 17/17 assertions PASS
+./build/ta670_tests                # 24/24 assertions PASS
 ```
 
 Built with `-Wall -Wextra -Wpedantic -Werror -Wconversion -Wshadow` per the
@@ -75,5 +79,6 @@ coding standard; the suite also runs clean under ASan+UBSan.
 ## Status
 
 **Specification draft v0.1.0** with validated math and a tested DSP core
-covering §4–§9, §11. Next milestones: the parameter layer (§10), Eco-mode IIR
-halfbands (§9.2), and the CLAP/VST3/AU plugin adapters (§12).
+covering §3–§11 (engine, gain cell, sidechain, knee, M-S + linking,
+coloration, FIR & IIR oversampling, parameters, meters). Next milestone: the
+CLAP/VST3/AU plugin adapters and GUI (§12).
