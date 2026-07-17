@@ -4,7 +4,15 @@
 // SPDX-License-Identifier: MIT
 
 #include <clap/clap.h>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -13,6 +21,27 @@
 #include <vector>
 
 namespace {
+
+// ---- portable dynamic loading ------------------------------------------------
+#ifdef _WIN32
+using LibHandle = HMODULE;
+LibHandle libOpen(const char* path) { return LoadLibraryA(path); }
+void* libSym(LibHandle h, const char* name)
+{
+    return reinterpret_cast<void*>(GetProcAddress(h, name));
+}
+void libClose(LibHandle h) { FreeLibrary(h); }
+const char* libError() { return "LoadLibraryA failed"; }
+#else
+using LibHandle = void*;
+LibHandle libOpen(const char* path)
+{
+    return dlopen(path, RTLD_NOW | RTLD_LOCAL);
+}
+void* libSym(LibHandle h, const char* name) { return dlsym(h, name); }
+void libClose(LibHandle h) { dlclose(h); }
+const char* libError() { return dlerror(); }
+#endif
 
 int g_failures = 0;
 
@@ -103,14 +132,14 @@ int main(int argc, char** argv)
     std::printf("TA-670 CLAP smoke test: %s\n", argv[1]);
 
     // ---- load through the real ABI ----------------------------------------
-    void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
-    expect(lib != nullptr, "H1 dlopen the .clap bundle");
+    LibHandle lib = libOpen(argv[1]);
+    expect(lib != nullptr, "H1 load the .clap bundle");
     if (lib == nullptr) {
-        std::fprintf(stderr, "dlerror: %s\n", dlerror());
+        std::fprintf(stderr, "load error: %s\n", libError());
         return 1;
     }
     const auto* entry =
-        static_cast<const clap_plugin_entry_t*>(dlsym(lib, "clap_entry"));
+        static_cast<const clap_plugin_entry_t*>(libSym(lib, "clap_entry"));
     expect(entry != nullptr && entry->init(argv[1]),
            "H2 clap_entry resolves and init succeeds");
 
@@ -227,7 +256,7 @@ int main(int argc, char** argv)
     plugin->deactivate(plugin);
     plugin->destroy(plugin);
     entry->deinit();
-    dlclose(lib);
+    libClose(lib);
     expect(true, "H15 clean teardown");
 
     std::printf("%s (%d failure%s)\n",

@@ -1,0 +1,98 @@
+# TA-670 CI (§14.5): Linux test gate, native Windows build + tests, NSIS
+# installer artifact on every run, GitHub Release on version tags.
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  linux-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j
+      - name: Test (DSP unit + CLAP smoke)
+        run: ctest --test-dir build --output-on-failure
+
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (MSVC x64)
+        run: cmake -B build -A x64
+
+      - name: Build (Release)
+        run: cmake --build build --config Release -j
+
+      - name: Test on Windows (DSP unit + CLAP smoke)
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "0.1.0"
+          if ("$env:GITHUB_REF" -like "refs/tags/v*") {
+            $v = "$env:GITHUB_REF" -replace "refs/tags/v", ""
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: |
+          $nsis = Get-Command makensis -ErrorAction SilentlyContinue
+          if ($nsis) { $nsis = $nsis.Source }
+          else {
+            choco install nsis -y --no-progress
+            $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          }
+          & $nsis `
+            /DVERSION=${{ steps.ver.outputs.version }} `
+            /DPLUGIN_FILE="$env:GITHUB_WORKSPACE\build\Release\TA-670.clap" `
+            installer\windows\TA-670.nsi
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Smoke-check installer exists
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem installer\windows\TA-670-Setup-*.exe
+          if (-not $exe) { exit 1 }
+          $exe | Format-List Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TA-670-Windows-Installer
+          path: installer/windows/TA-670-Setup-*.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TA-670-Windows-CLAP
+          path: build/Release/TA-670.clap
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-tests, windows-installer]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: TA-670-Windows-Installer
+      - name: Create GitHub release with installer
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" TA-670-Setup-*.exe \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Tekkchild Model 670 $GITHUB_REF_NAME" \
+            --notes "Windows x64 installer for the TA-670 vari-mu compressor (CLAP). Installs to Common Files\\CLAP. Built and tested (24 DSP assertions + 15 CLAP host checks) on windows-latest."
