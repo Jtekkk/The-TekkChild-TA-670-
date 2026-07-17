@@ -108,6 +108,45 @@ public:
 
     [[nodiscard]] int latencySamples() const noexcept { return latency_; }
 
+    // ---- live (RT-safe) parameter setters. Heavy topology changes — OS
+    // mode, cell recalibration — require prepare(); the plugin adapter
+    // requests a host restart for those (§10.4, §12.3).
+    void setInputDb(std::size_t ch, float db) noexcept
+    {
+        cfg_.inputDb[ch] = db;
+        inGain_[ch] = static_cast<float>(dbToLin(static_cast<double>(db)));
+    }
+
+    void setMakeupDb(std::size_t ch, float db) noexcept
+    {
+        cfg_.makeupDb[ch] = db;
+        makeupGain_[ch] = static_cast<float>(dbToLin(static_cast<double>(db)));
+    }
+
+    void setThresholdDb(std::size_t ch, float db) noexcept
+    {
+        cfg_.thresholdDb[ch] = db;
+    }
+
+    void setLink(float amount) noexcept { cfg_.linkAmount = amount; }
+    void setMix(float mix) noexcept { cfg_.mix = mix; }
+    void setMode(ChannelMode m) noexcept { cfg_.mode = m; }
+
+    void setColorEnabled(bool enabled) noexcept
+    {
+        cfg_.colorEnabled = enabled;
+        color_[0].setEnabled(enabled);
+        color_[1].setEnabled(enabled);
+    }
+
+    /// Time-constant switch: coefficient recompute only (no allocation).
+    void setPosition(std::size_t ch, int position) noexcept
+    {
+        cfg_.position[ch] = position;
+        env_[ch].prepare(position,
+                         fs_ * static_cast<double>(osFactor_));
+    }
+
     [[nodiscard]] float gainReductionDb(std::size_t ch) const noexcept
     {
         return -fastDb(cell_[ch].currentGain() + kTinyLin);

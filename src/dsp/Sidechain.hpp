@@ -40,7 +40,10 @@ inline constexpr std::array<PositionSpec, 6> kPositions{{
 
 class SidechainEnvelope {
 public:
-    /// Off-thread: select a position (1..6) and bake coefficients for fs.
+    /// Select a position (1..6) and bake coefficients for fs. Coefficient
+    /// recompute only — envelope state is preserved so the switch can be
+    /// changed during processing without dropping gain reduction (§10.4);
+    /// callers reset() explicitly on transport start.
     void prepare(int position, double fs) noexcept
     {
         const auto& spec =
@@ -53,7 +56,6 @@ public:
             alphaRes_[j] = onePoleAlpha(spec.reservoirs[j].releaseTau, fs);
             alphaChg_[j] = onePoleAlpha(spec.reservoirs[j].chargeTau, fs);
         }
-        reset();
     }
 
     void reset() noexcept

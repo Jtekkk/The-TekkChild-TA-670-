@@ -94,6 +94,8 @@ public:
         return p_;
     }
 
+    void setEnabled(bool enabled) noexcept { p_.enabled = enabled; }
+
 private:
     ColorationParams p_{};
     double ts_ = 1.0 / 48000.0;

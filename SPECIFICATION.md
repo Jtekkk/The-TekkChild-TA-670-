@@ -1241,6 +1241,12 @@ program material. Bypass path must null to ≤ −120 dBFS (REQ-006).
 ### 14.5 Tooling & CI
 
 - **pluginval** at **strictness 10** for VST3/AU; format validators for CLAP/AAX.
+- **Miniature CLAP host** (`tests/test_clap_host.cpp`): loads the built
+  `.clap` through the real C ABI (dlopen), verifies descriptor, params
+  (count/info/defaults vs the §10.1 table), audio ports, latency reporting
+  (87 samples at Standard), full lifecycle, param events, and steady-state
+  gain reduction on a calibrated tone — plugin-format validation in CI
+  without a DAW.
 - **Sanitizers:** ASan, UBSan on the test binary; **TSan** on a threaded host
   harness to prove RT-thread has no data races (REQ-013).
 - **RT-safety audit:** a debug allocator/`std::pmr` guard traps any allocation,

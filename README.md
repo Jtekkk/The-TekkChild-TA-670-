@@ -69,16 +69,29 @@ dependency-free unit-test binary mirrors §14.2:
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-./build/ta670_tests                # 24/24 assertions PASS
+cmake --build build                # DSP core + TA-670.clap plugin
+cd build && ctest --output-on-failure
+# dsp_unit:   24/24 assertions PASS
+# clap_smoke: 15/15 host checks PASS
 ```
 
 Built with `-Wall -Wextra -Wpedantic -Werror -Wconversion -Wshadow` per the
-coding standard; the suite also runs clean under ASan+UBSan.
+coding standard; both suites also run clean under ASan+UBSan.
+
+## 🔌 CLAP plugin
+
+`src/plugin/ClapPlugin.cpp` wraps the engine as a native **CLAP** plugin
+(`build/TA-670.clap`) — the spec's primary format (§12.1) — exposing all 17
+parameters with stepped switches, sample-block param events, latency
+reporting, and versioned state save/load. The vendored CLAP SDK (MIT) lives
+in `third_party/clap/`. `tests/test_clap_host.cpp` is a miniature host that
+loads the plugin through the real C ABI in CI: descriptor, extensions,
+lifecycle, param events, and measured gain reduction (8.9 dB on a −10 dBFS
+tone at threshold −20 — exactly the §6.4 static-curve prediction).
 
 ## Status
 
-**Specification draft v0.1.0** with validated math and a tested DSP core
-covering §3–§11 (engine, gain cell, sidechain, knee, M-S + linking,
-coloration, FIR & IIR oversampling, parameters, meters). Next milestone: the
-CLAP/VST3/AU plugin adapters and GUI (§12).
+**Specification draft v0.1.0** with validated math, a tested DSP core
+covering §3–§11, and a working CLAP plugin validated through an in-CI
+miniature host. Next milestones: VST3/AU wrappers, GUI, and pluginval/DAW
+compatibility runs (§12, §14.5).
