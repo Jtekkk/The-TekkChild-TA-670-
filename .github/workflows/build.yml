@@ -79,9 +79,13 @@ jobs:
           if-no-files-found: error
 
   release:
-    # Runs for version tags, or on manual dispatch (the workflow's
-    # GITHUB_TOKEN creates the tag + release server-side).
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # Runs for version tags, manual dispatch, or pushes to the development
+    # branch (the workflow's GITHUB_TOKEN creates the tag + release
+    # server-side; uploads are idempotent via --clobber).
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/claude/vari-mu-compressor-spec-msbawd'
     needs: [linux-tests, windows-installer]
     runs-on: ubuntu-latest
     permissions:
