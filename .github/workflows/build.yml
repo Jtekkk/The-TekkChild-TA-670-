@@ -79,7 +79,9 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Runs for version tags, or on manual dispatch (the workflow's
+    # GITHUB_TOKEN creates the tag + release server-side).
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [linux-tests, windows-installer]
     runs-on: ubuntu-latest
     permissions:
@@ -88,11 +90,23 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: TA-670-Windows-Installer
-      - name: Create GitHub release with installer
+      - name: Create or update GitHub release with installer
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" TA-670-Setup-*.exe \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "Tekkchild Model 670 $GITHUB_REF_NAME" \
-            --notes "Windows x64 installer for the TA-670 vari-mu compressor (CLAP). Installs to Common Files\\CLAP. Built and tested (24 DSP assertions + 15 CLAP host checks) on windows-latest."
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            TAG="v0.1.0"
+          fi
+          NOTES="Windows x64 installer for the TA-670 vari-mu compressor (CLAP). Installs to Common Files\\CLAP. Built and tested (24 DSP assertions + 15 CLAP host checks) on windows-latest."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" TA-670-Setup-*.exe \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" TA-670-Setup-*.exe \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Tekkchild Model 670 $TAG" \
+              --notes "$NOTES"
+          fi
