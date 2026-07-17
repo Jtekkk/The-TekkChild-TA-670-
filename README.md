@@ -78,6 +78,14 @@ cd build && ctest --output-on-failure
 Built with `-Wall -Wextra -Wpedantic -Werror -Wconversion -Wshadow` per the
 coding standard; both suites also run clean under ASan+UBSan.
 
+## ⬇️ Download (Windows)
+
+**[TA-670-Setup-0.1.0-win64.exe](https://github.com/Jtekkk/The-TekkChild-TA-670-/releases/download/v0.1.0/TA-670-Setup-0.1.0-win64.exe)**
+— installs the CLAP plugin to `C:\Program Files\Common Files\CLAP\Tekkchild`
+(with uninstaller). Built by CI on `windows-latest` (MSVC x64) after both test
+suites pass on Windows. All releases: see the
+[Releases page](https://github.com/Jtekkk/The-TekkChild-TA-670-/releases).
+
 ## 🔌 CLAP plugin
 
 `src/plugin/ClapPlugin.cpp` wraps the engine as a native **CLAP** plugin
